@@ -148,11 +148,26 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "edit_text":
         ctx.user_data["awaiting_text"] = True
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Отменить", callback_data="cancel_edit")]
+        ])
         await query.edit_message_text(
-            "Пришлите новый текст сообщения одним сообщением."
+            "Пришлите новый текст сообщения одним сообщением.",
+            reply_markup=kb,
         )
         return
 
+    if data == "cancel_edit":
+        ctx.user_data["awaiting_text"] = False
+        cur = state["interval_minutes"]
+        label = "Отключено" if cur == 0 else f"{cur} мин"
+        text = (
+            f"📝 Текущий текст:\n{state['message']}\n\n"
+            f"⏱ Интервал: {label}"
+        )
+        await query.edit_message_text(text, reply_markup=main_menu())
+        return
+   
     if data == "post_now":
         send_to_all(state["message"])
         await query.edit_message_text(
