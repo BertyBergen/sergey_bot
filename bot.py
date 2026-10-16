@@ -1,5 +1,6 @@
 import asyncio
 import json
+import traceback
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -136,6 +137,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    print(f"[DEBUG] callback data={query.data!r} from={query.from_user.id}")
+
     try:
         await query.answer()
     except Exception:
@@ -205,15 +208,19 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "post_now":
+        print("[DEBUG] post_now: entered")
         if not state["selected_groups"]:
+            print("[DEBUG] post_now: no groups selected")
             await query.edit_message_text(
                 "⚠️ Не выбрано ни одной группы. Зайдите в «Выбрать группы».",
                 reply_markup=main_menu(),
             )
             return
-        await asyncio.to_thread(
+        print(f"[DEBUG] post_now: sending to {state['selected_groups']}")
+        result = await asyncio.to_thread(
             send_to_all, state["message"], state["selected_groups"]
         )
+        print(f"[DEBUG] post_now: result={result}")
         await query.edit_message_text(
             "✅ Отправлено в выбранные группы.",
             reply_markup=main_menu(),
@@ -241,7 +248,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Обработчик ошибок ----------
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    print(f"Ошибка: {ctx.error}")
+    print("=== ОШИБКА ===")
+    traceback.print_exception(
+        type(ctx.error), ctx.error, ctx.error.__traceback__
+    )
 
 
 # ---------- Запуск ----------
