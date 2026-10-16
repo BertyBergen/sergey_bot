@@ -1,8 +1,7 @@
+import asyncio
 import json
-import os
 from pathlib import Path
 
-import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -23,8 +22,14 @@ STATE_FILE = Path("state.json")
 # ---------- Работа с состоянием ----------
 def load_state() -> dict:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"message": "Текст не задан", "interval_minutes": 0}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state.setdefault("selected_groups", list(CHAT_IDS.keys()))
+        return state
+    return {
+        "message": "Текст не задан",
+        "interval_minutes": 0,
+        "selected_groups": list(CHAT_IDS.keys()),
+    }
 
 
 def save_state(state: dict) -> None:
@@ -41,11 +46,10 @@ current_job = None
 
 def post_job():
     state = load_state()
-    send_to_all(state["message"])
+    send_to_all(state["message"], targets=state["selected_groups"])
 
 
 def reschedule(interval_minutes: int):
-    """Пересоздаёт задачу в планировщике под новый интервал."""
     global current_job
     if current_job:
         current_job.remove()
@@ -65,6 +69,7 @@ def main_menu():
     keyboard = [
         [InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_text")],
         [InlineKeyboardButton("⏱ Интервал", callback_data="interval_menu")],
+        [InlineKeyboardButton("👥 Выбрать группы", callback_data="groups_menu")],
         [InlineKeyboardButton("🚀 Опубликовать сейчас", callback_data="post_now")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -91,6 +96,30 @@ def interval_menu():
     return f"Текущий интервал: {label}", InlineKeyboardMarkup(keyboard)
 
 
+def groups_menu():
+    state = load_state()
+    selected = set(state["selected_groups"])
+
+    keyboard = []
+    for chat_id, name in CHAT_IDS.items():
+        mark = "✅" if chat_id in selected else "⬜"
+        keyboard.append([
+            InlineKeyboardButton(f"{mark} {name}", callback_data=f"toggle_{chat_id}")
+        ])
+    keyboard.append([InlineKeyboardButton("✔️ Готово", callback_data="groups_done")])
+    return "Выберите группы для публикации:", InlineKeyboardMarkup(keyboard)
+
+
+def main_text(state: dict) -> str:
+    cur = state["interval_minutes"]
+    label = "Отключено" if cur == 0 else f"{cur} мин"
+    return (
+        f"📝 Текущий текст:\n{state['message']}\n\n"
+        f"⏱ Интервал: {label}\n"
+        f"👥 Групп выбрано: {len(state['selected_groups'])} из {len(CHAT_IDS)}"
+    )
+
+
 # ---------- Проверка доступа ----------
 def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
@@ -102,18 +131,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нет доступа.")
         return
     state = load_state()
-    cur = state["interval_minutes"]
-    label = "Отключено" if cur == 0 else f"{cur} мин"
-    text = (
-        f"📝 Текущий текст:\n{state['message']}\n\n"
-        f"⏱ Интервал: {label}"
-    )
-    await update.message.reply_text(text, reply_markup=main_menu())
+    await update.message.reply_text(main_text(state), reply_markup=main_menu())
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     if not is_allowed(query.from_user.id):
         await query.edit_message_text("Нет доступа.")
@@ -123,13 +149,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     state = load_state()
 
     if data == "back_main":
-        cur = state["interval_minutes"]
-        label = "Отключено" if cur == 0 else f"{cur} мин"
-        text = (
-            f"📝 Текущий текст:\n{state['message']}\n\n"
-            f"⏱ Интервал: {label}"
-        )
-        await query.edit_message_text(text, reply_markup=main_menu())
+        await query.edit_message_text(main_text(state), reply_markup=main_menu())
         return
 
     if data == "interval_menu":
@@ -146,6 +166,28 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=kb)
         return
 
+    if data == "groups_menu":
+        text, kb = groups_menu()
+        await query.edit_message_text(text, reply_markup=kb)
+        return
+
+    if data.startswith("toggle_"):
+        chat_id = int(data.split("_", 1)[1])
+        selected = set(state["selected_groups"])
+        if chat_id in selected:
+            selected.discard(chat_id)
+        else:
+            selected.add(chat_id)
+        state["selected_groups"] = list(selected)
+        save_state(state)
+        text, kb = groups_menu()
+        await query.edit_message_text(text, reply_markup=kb)
+        return
+
+    if data == "groups_done":
+        await query.edit_message_text(main_text(state), reply_markup=main_menu())
+        return
+
     if data == "edit_text":
         ctx.user_data["awaiting_text"] = True
         kb = InlineKeyboardMarkup([
@@ -159,19 +201,21 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "cancel_edit":
         ctx.user_data["awaiting_text"] = False
-        cur = state["interval_minutes"]
-        label = "Отключено" if cur == 0 else f"{cur} мин"
-        text = (
-            f"📝 Текущий текст:\n{state['message']}\n\n"
-            f"⏱ Интервал: {label}"
-        )
-        await query.edit_message_text(text, reply_markup=main_menu())
+        await query.edit_message_text(main_text(state), reply_markup=main_menu())
         return
-   
+
     if data == "post_now":
-        send_to_all(state["message"])
+        if not state["selected_groups"]:
+            await query.edit_message_text(
+                "⚠️ Не выбрано ни одной группы. Зайдите в «Выбрать группы».",
+                reply_markup=main_menu(),
+            )
+            return
+        await asyncio.to_thread(
+            send_to_all, state["message"], state["selected_groups"]
+        )
         await query.edit_message_text(
-            "✅ Отправлено во все группы.",
+            "✅ Отправлено в выбранные группы.",
             reply_markup=main_menu(),
         )
         return
@@ -189,18 +233,20 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     save_state(state)
     ctx.user_data["awaiting_text"] = False
 
-    cur = state["interval_minutes"]
-    label = "Отключено" if cur == 0 else f"{cur} мин"
     await update.message.reply_text(
-        f"✅ Текст обновлён.\n\n📝 {new_text}\n\n⏱ Интервал: {label}",
+        f"✅ Текст обновлён.\n\n{main_text(state)}",
         reply_markup=main_menu(),
     )
+
+
+# ---------- Обработчик ошибок ----------
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    print(f"Ошибка: {ctx.error}")
 
 
 # ---------- Запуск ----------
 def main():
     scheduler.start()
-    # восстанавливаем интервал из файла при старте
     state = load_state()
     reschedule(state["interval_minutes"])
 
@@ -208,6 +254,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_error_handler(on_error)
 
     print("Бот запущен.")
     app.run_polling()
