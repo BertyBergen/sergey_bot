@@ -2,10 +2,19 @@ import requests
 from config import BOT_TOKEN, CHAT_IDS
 
 
-def send_to_all(text: str) -> None:
-    """Отправляет сообщение во все группы из CHAT_IDS."""
+def send_to_all(text: str, targets=None) -> dict:
+    """
+    Отправляет сообщение в указанные группы.
+    targets: список chat_id. Если None — во все из CHAT_IDS.
+    Возвращает {"ok": N, "fail": M}.
+    """
+    if targets is None:
+        targets = list(CHAT_IDS.keys())
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    for chat_id in CHAT_IDS:
+    ok, fail = 0, 0
+
+    for chat_id in targets:
         try:
             r = requests.post(
                 url,
@@ -15,30 +24,12 @@ def send_to_all(text: str) -> None:
             data = r.json()
             if data.get("ok"):
                 print(f"[OK] {chat_id}")
+                ok += 1
             else:
                 print(f"[FAIL] {chat_id}: {data.get('description')}")
+                fail += 1
         except Exception as e:
             print(f"[ERROR] {chat_id}: {e}")
+            fail += 1
 
-
-# poster.py
-import requests
-from config import BOT_TOKEN, CHAT_IDS
-
-def send_to_all(message: str, targets=None):
-    """
-    targets: список chat_id для отправки.
-             Если None — отправить во все группы из CHAT_IDS.
-    """
-    if targets is None:
-        targets = list(CHAT_IDS.keys())
-
-    for chat_id in targets:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": message},
-                timeout=10,
-            )
-        except Exception as e:
-            print(f"Ошибка отправки в {chat_id}: {e}")
+    return {"ok": ok, "fail": fail}
